@@ -1,0 +1,6 @@
+{
+  "name": "AgentOS",
+  "description": "A sophisticated operating environment for autonomous AI agents featuring Command Center, Agent Forge, Task Orchestrator, and Cognitive Memory.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

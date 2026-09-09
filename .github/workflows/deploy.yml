@@ -1,0 +1,116 @@
+name: AgentOS CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # ----------------------------------------------------------------------------
+  # Job 1: Lint & Verify Backend Services
+  # ----------------------------------------------------------------------------
+  verify:
+    name: Verify Codebases
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Frontend Dependencies
+        run: npm ci
+
+      - name: Lint Frontend
+        run: npm run lint
+
+  # ----------------------------------------------------------------------------
+  # Job 2: Deploy Edge Gateway to Cloudflare Workers (Always Free Tier)
+  # ----------------------------------------------------------------------------
+  deploy-edge-gateway:
+    name: Deploy Cloudflare Worker Edge Gateway
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./backend/edge-gateway
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Edge Dependencies
+        run: npm ci
+
+      - name: Deploy to Cloudflare Workers
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: 'backend/edge-gateway'
+          secrets: |
+            SUPABASE_URL
+            SUPABASE_SERVICE_ROLE_KEY
+            UPSTASH_REDIS_REST_URL
+            UPSTASH_REDIS_REST_TOKEN
+            GEMINI_API_KEY
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
+          UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+
+  # ----------------------------------------------------------------------------
+  # Job 3: Build & Deploy Core Kernel Container (Koyeb / Oracle Cloud Free Tier)
+  # ----------------------------------------------------------------------------
+  deploy-core-kernel:
+    name: Build & Push Core Kernel Container
+    needs: verify
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry (ghcr.io)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and Push Docker Image
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend/core-kernel
+          file: ./backend/core-kernel/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/core-kernel:latest
+            ghcr.io/${{ github.repository }}/core-kernel:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trigger Koyeb Redeployment (Optional Webhook)
+        if: env.KOYEB_DEPLOY_WEBHOOK != ''
+        run: |
+          curl -X POST "${{ secrets.KOYEB_DEPLOY_WEBHOOK }}"
+        env:
+          KOYEB_DEPLOY_WEBHOOK: ${{ secrets.KOYEB_DEPLOY_WEBHOOK }}
